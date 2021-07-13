@@ -1,0 +1,87 @@
+name: PR - Execute SonarQube
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  JAVA_VERSION: '8'
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  SONARQUBE_TOKEN: ${{ secrets.SONARQUBE_TOKEN }}
+  SONARQUBE_URL: https://chemit-sonarqube.azurewebsites.net/
+  SONARQUBE_INT_URL: https://chemit-sonarqube.xom.cloud/
+  SONARQUBE_PROJECT_KEY: too-poc-java-sonar-SJsx4HWxZy8z7W
+
+jobs:
+  # Run Sonarqube -------------------------------------------------------------
+  sonarqube:
+    name: "Sonarqube scan"
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout code
+      - uses: actions/checkout@v2
+        with:
+          fetch-depth: "0"
+      # Setup java
+      - name: Set java
+        uses: actions/setup-java@v1
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+      # Build with maven
+      - name: Build Maven
+        shell: bash
+        run: mvn clean package
+      # Run sonarqube
+      - name: Setup sonarqube
+        uses: warchant/setup-sonar-scanner@v3
+      - name: Set Sonar Scanner Options
+        run: export SONAR_SCANNER_OPTS="-Xmx512m"
+      - name: Run sonarqube
+        env:
+          GITHUB_TOKEN: ${{ env.GITHUB_TOKEN }}
+        run: sonar-scanner
+            -Dsonar.login=${{ env.SONARQUBE_TOKEN }}
+            -Dsonar.host.url=${{ env.SONARQUBE_URL }}
+            -Dsonar.projectKey=${{ env.SONARQUBE_PROJECT_KEY }}
+      # Call SonarQube API to check project result
+      - name: Check SonarQube Status
+        id: sonarqubestatus
+        run: |
+          sleep 5
+          sqResult=$(curl -u ${{ env.SONARQUBE_TOKEN }}: ${{ env.SONARQUBE_URL }}api/qualitygates/project_status?projectKey=${{ env.SONARQUBE_PROJECT_KEY }})
+          projectStatus=$(echo $sqResult | jq '.projectStatus.status')
+          echo "::set-output name=sqResult::$sqResult"
+          echo "::set-output name=projectStatus::$projectStatus"
+      # Update pull request
+      - name: Update Pull Request
+        uses: actions/github-script@0.9.0
+        if: github.event_name == 'pull_request'
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const output = `#### SonarQube Scan 📋 \`${{ steps.sonarqubestatus.outputs.projectStatus }}\`
+
+            Check result = ${{ env.SONARQUBE_INT_URL }}dashboard?id=${{ env.SONARQUBE_PROJECT_KEY }}
+
+            *Pushed by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`* `;
+
+            github.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: output
+            })
+      # Check result
+      - id: check-result
+        name: Check result
+        shell: bash
+        run: |
+          if [ "${{ steps.sonarqubestatus.outputs.projectStatus }}" = "OK" ]; then
+            echo "SonarQube scan success"
+            exit 0
+          else
+            echo "SonarQube scan failed"
+            exit 1
+          fi
